@@ -31,12 +31,17 @@ Point: adt
 display: ref Display;
 top: ref Tk->Toplevel;
 
+debug := 0;
+frate := 41;	# attempt to attain n frames/second
+procs := 1;
+
 size := 200;
 zoom := 3;
 scale := 30.;
-ws := 5;
+degree := 5;
 
 time := 0;
+phi := 5.0;
 
 taskcfg := array[] of {
 	"panel .c",
@@ -52,6 +57,16 @@ init(ctxt: ref Draw->Context, args: list of string)
 	arg = load Arg Arg->PATH;
 	
 	arg->init(args);
+	arg->setusage(arg->progname()+" [-d] [-f fps] [-p procs] [-s shift] [size zoom scale degree]");
+	while((opt := arg->opt()) != 0)
+		case opt {
+		'd' => debug++;
+		'f' => frate = 1000 / int arg->arg();
+		'p' => procs = int arg->arg();
+		's' => phi = real arg->arg();
+		* => arg->usage();
+		}
+		
 	args = arg->argv();
 	if(len args == 4) {
 		i := 0;
@@ -60,12 +75,13 @@ init(ctxt: ref Draw->Context, args: list of string)
 			0 => size = int hd args;
 			1 => zoom = int hd args;
 			2 => scale = real hd args;
-			3 => ws = int hd args;
+			3 => degree = int hd args;
 			}
 			i++;
 		}
 	}
-	sys->print("(size %d) (zoom %d) (scale %g) (degree %d)\n", size, zoom, scale, ws);
+	if(debug)
+	sys->print("(size %d) (zoom %d) (scale %g) (degree %d) (phi %g)\n", size, zoom, scale, degree, phi);
 
 	spawn window(ctxt);
 }
@@ -88,7 +104,7 @@ window(ctxt: ref Draw->Context)
 		tkcmd(top, taskcfg[i]);
 	
 	start := sys->millisec();
-	img := frame(size, zoom, ws, 0);
+	img := frame(size, zoom, degree, 0);
 	stop := sys->millisec();
 	sys->print("%dms\n", stop-start);
 	tk->putimage(top, ".c", img, nil);
@@ -99,7 +115,7 @@ window(ctxt: ref Draw->Context)
 	
 	sync := chan of int;
 	step := chan of ref Image;
-	spawn animate(size, zoom, ws, step, sync);
+	spawn animate(step, sync);
 	apid := <- sync;
 	
 	for(;;) alt {
@@ -111,31 +127,57 @@ window(ctxt: ref Draw->Context)
 	c = <-top.wreq or
 	c = <-titlectl =>
 		if(c == "exit") {
-			kill(apid);
+			killgrp(apid);
 			return;
 		}
 		e := tkclient->wmctl(top, c);
 		if(e == nil && c[0] == '!'){
-			kill(apid);
-			spawn animate(actr(".c").dy(), zoom, ws, step, sync);
-			apid = <- sync;
+			size = actr(".c").dy();
 		}
 
 	img = <-step =>
 		stop = sys->millisec();
 		tk->putimage(top, ".c", img, nil);
 		tkcmd(top, "update");
-		#sys->print("%dms\n", stop-start);
+		if(debug)
+			sys->print("%dms\n", stop-start);
 		start=stop;
 	}
 }
 
-animate(sz, z, deg: int, c: chan of ref Image, p: chan of int)
+animate(c: chan of ref Image, p: chan of int)
 {
 	p <-= sys->pctl(Sys->NEWPGRP, nil);
 	
+	tchan := chan[procs] of int;
+	f := chan[procs] of (int, ref Image);
+	for(i := 0; i < procs; i++) {
+		spawn worker(f, tchan);
+	}
+
+	spawn feeder(tchan);
+	
+	for(;;) alt {
+	(s, img) := <-f =>
+		if(debug)
+			sys->print("%d: ", s);
+		c <-= img;
+	}
+}
+
+feeder(s: chan of int)
+{
 	for(;;) {
-		c <-= frame(sz, z, deg, time++);
+	s <-= time++;
+	sys->sleep(frate);
+	}
+}
+
+worker(c: chan of (int, ref Image), s: chan of int)
+{
+	for(;;) alt {
+	t := <-s =>
+		c <-= (t, frame(size, zoom, degree, t));
 	}
 }
 
@@ -155,18 +197,23 @@ transform(θ: real, p: Point): Point
 	return p;
 }
 
+wave(ϕ, θ: real, p: Point): real
+{
+	return (cos(cos(θ)*p.x + sin(θ)*p.y + ϕ) + 1.0) / 2.0;
+}
+
 wave1(ϕ, θ: real, p: Point): real
 {
 	if(θ != 0.0)
 		p = transform(θ, p);
-	return (cos(ϕ+p.y) + 1.) / 2.0;
+	return (cos(cos(ϕ)*p.x + sin(ϕ)*p.y) + 1.0) / 2.0;
 }
 
-wave(ϕ, θ: real, p: Point): real
+wave2(ϕ, θ: real, p: Point): real
 {
 	if(θ != 0.0)
 		p = transform(θ, p);
-	return (cos(cos(ϕ)*p.x + sin(ϕ)*p.y) + 1.0) / 2.0;
+	return (cos(ϕ+p.y) + 1.) / 2.0;
 }
 
 quasicrystal(size, degree: int, ϕ: real): array of array of byte
@@ -179,7 +226,7 @@ quasicrystal(size, degree: int, ϕ: real): array of array of byte
 			#θ := atan2(real x, real y) + ϕ;
 			#θ := atan2(real x + ϕ, real y + ϕ) + ϕ;
 			p := point(x,y);
-			acc := wave1(ϕ, θ, p);
+			acc := wave(ϕ, θ, p);
 			for (d := 1; d < degree; d++) {
 				θ += 180. * Degree / real degree;
 				if(d%2)
@@ -196,7 +243,7 @@ quasicrystal(size, degree: int, ϕ: real): array of array of byte
 
 frame(sz: int, z: int, deg: int, time: int): ref Image
 {
-	ϕ := real time * 5.0 * Degree;
+	ϕ := real time * phi * Degree;
 	
 	q := quasicrystal(sz, deg, ϕ);
 	
@@ -255,4 +302,9 @@ progctl(pid: int, s: string)
 kill(pid: int)
 {
 	progctl(pid, "kill");
+}
+
+killgrp(pid: int)
+{
+	progctl(pid, "killgrp");
 }
