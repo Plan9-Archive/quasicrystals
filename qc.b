@@ -41,7 +41,7 @@ scale := 30.;
 degree := 5;
 
 time := 0;
-phi := 5.0;
+phi := 5.0;  	# step phase change
 
 taskcfg := array[] of {
 	"panel .c",
@@ -114,8 +114,7 @@ window(ctxt: ref Draw->Context)
 	tkclient->startinput(top, "kbd"::"ptr"::nil);
 	
 	sync := chan of int;
-	step := chan of ref Image;
-	spawn animate(step, sync);
+	spawn animate(".c", sync);
 	apid := <- sync;
 	
 	for(;;) alt {
@@ -132,20 +131,24 @@ window(ctxt: ref Draw->Context)
 		}
 		e := tkclient->wmctl(top, c);
 		if(e == nil && c[0] == '!'){
-			size = actr(".c").dy();
+			if (debug) sys->print("\nc: '%s'\n", c);
+			if (c[0:5] == "!size") {
+				size = actr(".c").dy();
+				killgrp(apid);
+				spawn animate(".c", sync);
+				apid = <-sync;
+			}
 		}
-
-	img = <-step =>
-		stop = sys->millisec();
-		tk->putimage(top, ".c", img, nil);
-		tkcmd(top, "update");
-		if(debug)
-			sys->print("%dms\n", stop-start);
-		start=stop;
 	}
 }
 
-animate(c: chan of ref Image, p: chan of int)
+update(c: string, img: ref Image)
+{
+	tk->putimage(top, c, img, nil);
+	tkcmd(top, "update");
+}
+
+animate(c: string, p: chan of int)
 {
 	p <-= sys->pctl(Sys->NEWPGRP, nil);
 	
@@ -155,21 +158,45 @@ animate(c: chan of ref Image, p: chan of int)
 		spawn worker(f, tchan);
 	}
 
-	spawn feeder(tchan);
-	
-	for(;;) alt {
+	n := int (360. / phi);
+	buf := array[n] of ref Image;
+
+	spawn feeder(n, tchan);
+
+	build: for(;;) alt {
 	(s, img) := <-f =>
 		if(debug)
 			sys->print("%d: ", s);
-		c <-= img;
+		update(c, img);
+		if (s < n)
+			buf[s] = img;
+		if (s >= n-1) {
+			for (i=0; i<procs; i++)	# shut down the workers
+				tchan <-= -1;
+			break build;
+		}
+	}
+
+	i = 0;
+	start := sys->millisec();
+	stop := start;
+	for(;;) {
+		if (debug > 1) {
+			stop = sys->millisec();
+			sys->print("%dms\n", stop-start);
+			start = stop;
+		}
+		if (i == n) i = 0;
+		update(c, buf[i++]);
+		sys->sleep(frate);
 	}
 }
 
-feeder(s: chan of int)
+feeder(n: int, s: chan of int)
 {
-	for(;;) {
-	s <-= time++;
-	sys->sleep(frate);
+	for(i := 0; i < n; i++) {
+		s <-= i;
+		sys->sleep(frate);
 	}
 }
 
@@ -177,6 +204,7 @@ worker(c: chan of (int, ref Image), s: chan of int)
 {
 	for(;;) alt {
 	t := <-s =>
+		if (t == -1) return;
 		c <-= (t, frame(size, zoom, degree, t));
 	}
 }
