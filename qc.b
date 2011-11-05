@@ -35,10 +35,10 @@ debug := 0;
 frate := 41;	# attempt to attain n frames/second
 procs := 1;
 
-size := 200;
-zoom := 3;
-scale := 30.;
-degree := 5;
+size := 250;
+zoom := 1;
+scale := 37.;
+degree := 7;
 
 time := 0;
 phi := 5.0;  	# step phase change
@@ -163,8 +163,8 @@ animate(c: string, p: chan of int)
 
 	spawn feeder(n, tchan);
 
-	build: for(;;) alt {
-	(s, img) := <-f =>
+	for(;;) {
+		(s, img) := <-f;
 		if(debug)
 			sys->print("%d: ", s);
 		update(c, img);
@@ -173,7 +173,7 @@ animate(c: string, p: chan of int)
 		if (s >= n-1) {
 			for (i=0; i<procs; i++)	# shut down the workers
 				tchan <-= -1;
-			break build;
+			break;
 		}
 	}
 
